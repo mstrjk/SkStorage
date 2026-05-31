@@ -1,0 +1,132 @@
+# Pattern matchers for the persistent scope. Variables matching any of these
+# are routed to persistent.db (cross-player queryable, survive season resets).
+# Glob-style: * matches any chars. Anchored to whole-name match.
+# Anything NOT matched here is seasonal and gets wiped by /skstorage reset-season.
+persistent:
+  patterns:
+    - "credits::*"
+    - "balance::*"
+    - "level::*"
+    - "rank::*"
+    - "kills::*"
+    - "deaths::*"
+    - "playtime::*"
+
+# Per-player file storage settings. Each player's data lives in
+#   plugins/SkStorage/player/<shard>/<uuid>.db
+# shard-chars determines how many leading hex chars of the UUID are used as
+# a sub-directory name (2 = 256 buckets, plenty for ~100k players).
+# Connections open on PlayerJoinEvent and close on PlayerQuitEvent. At any
+# instant the open-file count is roughly the online player count.
+player:
+  shard-chars: 2
+
+  # Auto-discard small player files on quit. A bare-schema file is ~20 KB.
+  # When a player joins once and leaves with no meaningful gameplay, their
+  # file ends up at or near that size. Set this to a threshold in KB; on
+  # PlayerQuitEvent, if the file is at or below the threshold it gets
+  # deleted (along with -shm/-wal companions). Their identity in
+  # playerdata.db (uuid/name/first_join/last_quit) is NOT touched, so they
+  # still appear in /skstorage who.
+  #
+  # 0 (default) disables this. Suggested production value if you want it
+  # on: 24 (KB), catches "joined once, never came back" players,
+  # leaves anyone who actually played alone.
+  auto_discard_on_leave_kb: 0
+
+  # Background eager-load: walk every per-player file after boot and load
+  # its variables into Skript's RAM, so offline-player data is queryable
+  # by loops like `loop {credits::*}` (used by leaderboards). Throttled
+  # to N files per server tick so the main thread stays responsive.
+  #   1 = ~20 files/sec (very gentle)
+  #   5 = ~100 files/sec (typical sweet spot)
+  #   0 = disabled (lazy-load only, offline data NOT queryable)
+  # At 5/tick a 100k-file server finishes in ~17 minutes after boot.
+  background_load_files_per_tick: 1
+
+  # Preload mode. Controls WHEN per-player files get loaded into Skript's
+  # variable tree, which determines whether the loaded variables are
+  # visible to wildcard iteration and dynamic name resolution.
+  #
+  #   false (default): "lite" / lazy. Skript's load_i returns immediately;
+  #                    background_load_files_per_tick drip-feeds files
+  #                    asynchronously AFTER Skript's load phase is complete.
+  #                    Variables fed in post-load land in Skript's direct
+  #                    lookup map ONLY, they are invisible to:
+  #                      - `loop {x::*}` wildcard iteration
+  #                      - `{x::%var%::y}` dynamic name resolution
+  #                    Literal `{x::<hardcoded-name>::y}` access still works.
+  #                    Fine for setups where every per-player query uses a
+  #                    constant, hardcoded variable name.
+  #
+  #   true:            "full" / blocking. load_i synchronously walks every
+  #                    per-player file and integrates its variables during
+  #                    Skript's load phase, same pattern persistent.db and
+  #                    server.db use. Variables fully integrate into the
+  #                    tree: wildcard iteration and dynamic resolution both
+  #                    work for every player, online or offline.
+  #
+  #                    Cost: Skript will NOT finish loading until every
+  #                    file is loaded. For 2,500 files this is ~30-60s
+  #                    additional boot time; for 100,000 files it can be
+  #                    several minutes. The server's "Done" message and
+  #                    player-join readiness are gated on this completing.
+  #
+  # Turn this on if you have ANY cross-player loops (`loop {x::*}`),
+  # leaderboards, or code that builds variable names dynamically from a
+  # UUID held in another variable. This is the typical case for team
+  # systems, party plugins, top-N rankings, etc.
+  preload_players: false
+
+# Server scope. Two modes:
+#   strict (default):    server scope claims only names starting with `sf::`.
+#                        Anything not in persistent / player / server stays in
+#                        Skript's RAM (lost on restart). Surfaces stray vars.
+#   legacy_fallthrough:  server scope claims EVERY name not claimed by
+#                        persistent or player. Migration-safe for legacy
+#                        codebases that pre-date SkStorage's prefix rules.
+server:
+  # Set true to migrate from a legacy codebase where most globals don't have
+  # the sf:: prefix. Recommended: leave false on greenfield servers; turn on
+  # only during a migration window then refactor your scripts to use sf::.
+  legacy_fallthrough: false
+
+# Server scope (global state) requires the `sf::` prefix on variable names.
+# A variable that doesn't match the persistent allowlist, doesn't contain
+# a UUID, and doesn't start with `sf::` is NOT persisted. It lives in
+# Skript's RAM for the session and is lost on restart. This prevents the
+# silent fallthrough that hid 198 corrupt eco.credits names in your old DB.
+# Examples that route to server.db:
+#   {sf::event.active}             yes
+#   {sf::spawn.location}           yes
+#   {server.spawn}                 NO (no prefix, unrouted)
+#   {credits::%uuid%}              -> persistent (allowlist)
+#   {homes::%uuid%::1}             -> player (UUID detected)
+
+# Auto-tracked player metadata. The plugin maintains uuid, name, first/last
+# join, playtime, sessions, etc. without any script involvement, in
+#   plugins/SkStorage/playerdata.db
+# Skript reads via:  playerdata "<field>" of <player>
+# Fields: uuid, name, first join, last join, last quit, playtime, sessions,
+#         last world, last ip hash (only if enabled below).
+# This data is read-only from Skript and survives season resets.
+# PlotSquared integration. When a plot is deleted (PostPlotDeleteEvent fires),
+# auto-sweep server.db for any variable name containing the deleted plot's
+# world name or plot ID and delete the matches. Useful for cleaning up
+# location-keyed data (plant data, hooks, plot shops, etc.) that becomes
+# orphaned when a plot is wiped. Only fires after a successful delete, never
+# on cancel. Soft-depends on PlotSquared; if PS isn't loaded this is a no-op.
+plotsquared:
+  cleanup_on_delete: false
+
+playerdata:
+  enabled: true
+
+  # Alt detection / abuse correlation feature.
+  # When enabled, stores a keyed hash of the player's last seen IP address
+  # for abuse prevention and alt-detection. Raw IP addresses are never stored
+  # by this plugin. Depending on your jurisdiction, hashed IP addresses may
+  # still be considered personal or pseudonymous data. Server owners are
+  # responsible for enabling this only where they have a lawful basis and
+  # appropriate notice.
+  track_last_ip_hash: false
