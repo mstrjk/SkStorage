@@ -94,3 +94,6 @@ CSV migrator is a stub. This will release in upcoming updates.
 Take a backup of your prod variables.db. Migrate it into a test instance. Verify a handful of variables read back the same values.
 
 I tested this on my own server with a couple hundred million rows. It's pretty robust.
+
+oh yeah, and it doesn't suck like skript-db
+k thanks for coming to my ted talk byeeee
