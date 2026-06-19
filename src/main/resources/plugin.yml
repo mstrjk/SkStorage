@@ -1,11 +1,11 @@
 name: SkStorage
-version: 1.2.0
-main: dev.teacommontea.skstorage.SkStoragePlugin
+version: '${version}'
+main: net.teacommontea.skstorage.SkStoragePlugin
 api-version: '1.21'
-authors: [TeaCommonTea]
-description: Modern SQLite-backed Skript variable storage with auto-routing, per-player files, season management, and built-in player metadata tracking.
+authors: [teacommontea]
+description: Modern SQLite-backed Skript variable storage with user-defined table routing, per-table UUID sharding, and built-in player metadata tracking.
 depend: [Skript]
-softdepend: [PlotSquared]
+softdepend: [PlotSquared, LiteBans]
 libraries:
   - org.xerial:sqlite-jdbc:3.46.1.3
 
@@ -13,10 +13,54 @@ commands:
   skstorage:
     description: SkStorage admin commands.
     aliases: [skst]
-    permission: skstorage.admin
-    usage: /skstorage <reset-season|migrate|who|stats>
+    usage: /skstorage <stats|who|clear|reload|migrate|flatline|kill|alive|merge|route>
 
 permissions:
-  skstorage.admin:
-    description: Allows use of /skstorage admin commands.
+  SkStorage.AdminCommandsPrivileged:
+    description: Run every SkStorage command, overriding all config toggles.
     default: op
+    children:
+      SkStorage.StatsCommandPrivileged: true
+      SkStorage.WhoCommandPrivileged: true
+      SkStorage.ClearCommandPrivileged: true
+      SkStorage.ReloadCommandPrivileged: true
+      SkStorage.MigrateCommandPrivileged: true
+      SkStorage.FlatlineCommandPrivileged: true
+      SkStorage.KillCommandPrivileged: true
+      SkStorage.AliveCommandPrivileged: true
+      SkStorage.MergeCommandPrivileged: true
+      SkStorage.RouteCommandPrivileged: true
+  SkStorage.AdminCommands:
+    description: Run every SkStorage command, respecting config toggles.
+    default: false
+    children:
+      SkStorage.StatsCommand: true
+      SkStorage.WhoCommand: true
+      SkStorage.ClearCommand: true
+      SkStorage.ReloadCommand: true
+      SkStorage.MigrateCommand: true
+      SkStorage.FlatlineCommand: true
+      SkStorage.KillCommand: true
+      SkStorage.AliveCommand: true
+      SkStorage.MergeCommand: true
+      SkStorage.RouteCommand: true
+  SkStorage.StatsCommandPrivileged: {default: false}
+  SkStorage.WhoCommandPrivileged: {default: false}
+  SkStorage.ClearCommandPrivileged: {default: false}
+  SkStorage.ReloadCommandPrivileged: {default: false}
+  SkStorage.MigrateCommandPrivileged: {default: false}
+  SkStorage.FlatlineCommandPrivileged: {default: false}
+  SkStorage.KillCommandPrivileged: {default: false}
+  SkStorage.AliveCommandPrivileged: {default: false}
+  SkStorage.MergeCommandPrivileged: {default: false}
+  SkStorage.RouteCommandPrivileged: {default: false}
+  SkStorage.StatsCommand: {default: false}
+  SkStorage.WhoCommand: {default: false}
+  SkStorage.ClearCommand: {default: false}
+  SkStorage.ReloadCommand: {default: false}
+  SkStorage.MigrateCommand: {default: false}
+  SkStorage.FlatlineCommand: {default: false}
+  SkStorage.KillCommand: {default: false}
+  SkStorage.AliveCommand: {default: false}
+  SkStorage.MergeCommand: {default: false}
+  SkStorage.RouteCommand: {default: false}

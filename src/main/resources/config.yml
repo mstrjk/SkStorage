@@ -1,132 +1,135 @@
-# Pattern matchers for the persistent scope. Variables matching any of these
-# are routed to persistent.db (cross-player queryable, survive season resets).
-# Glob-style: * matches any chars. Anchored to whole-name match.
-# Anything NOT matched here is seasonal and gets wiped by /skstorage reset-season.
-persistent:
-  patterns:
-    - "credits::*"
-    - "balance::*"
-    - "level::*"
-    - "rank::*"
-    - "kills::*"
-    - "deaths::*"
-    - "playtime::*"
+# SkriptStorage (SkStorage) Configuration
+# 1.0.0 PUBLIC
 
-# Per-player file storage settings. Each player's data lives in
-#   plugins/SkStorage/player/<shard>/<uuid>.db
-# shard-chars determines how many leading hex chars of the UUID are used as
-# a sub-directory name (2 = 256 buckets, plenty for ~100k players).
-# Connections open on PlayerJoinEvent and close on PlayerQuitEvent. At any
-# instant the open-file count is roughly the online player count.
+# Before doing anything, open Skript's config.sk
+# and replace the database section with the following:
+# databases:
+#     skstorage:
+#         type: skstorage
+#         pattern: .*
+#         file: ./plugins/SkStorage/
+#         backup interval: 6 hours
+#         backups to keep: 8
+#         monitor changes: false
+#         monitor interval: 20 seconds
+
+# How to create a new table with its own patterns:
+# pd_table: # To make your own table, you'll set the name like this example, minus the "example" field.
+#  database: true # Required to allow the plugin to see that you want a new variable route.
+#  patterns: "pd::" # Example pattern for auto-routing variables to "persistent" storage.
+#  permanent: false # Whether the plugin should delete this table on /skstorage clear.
+#  split_file_by_uuid: false # Creates a directory that splits each database file into separate files for each UUID, which can reduce lock contention and speed up large databases. The plugin automatically hashes UUIDs into subdirectories to avoid filesystem limits on files per directory. Note that this is not compatible with patterns that don't include UUIDs, so only use it for player-specific data.
+#  index: 2 # This means "Even if a UUID is in here, this database takes precedent"
+#  example: true
+
+# Highest number index = most precedence. If a variable matches multiple patterns, the one with the highest index will be used. If two patterns have the same index, the one that was defined last will be used.
+
+# A second example
+# server_table:
+#  database: true
+#  patterns: "server::"
+#  permanent: true
+#  split_file_by_uuid: false
+#  index: 1
+#  example: true
+
+# If a variable doesn't match any patterns, it will be stored in the default.db database. 
+# This is the fallback for any variable that doesn't match a pattern, so it's important to have it defined.
+# You can also set it to database: false to disable variable storage entirely, but this is not recommended unless you have a specific use case in mind,
+# such as using Skript purely for in-memory data manipulation without persistence. 
+
+# Simple mode:
+simple_mode: false
+# Enable this mode if all these settings are too confusing and you just want 
+# to use an SQLite database inside of Skript. 
+# Enabling this mode overrides all other database creations
+# and routes all database reads and writes to default.db.
+
+# Default routing:
+player_table:
+  database: true
+  patterns: "*uuid of %player%::" # "*" is a wildcard that matches any prefix, so this routes any variable with "player::" in its name to this table.
+  permanent: false
+  split_file_by_uuid: true
+  index: 0
+
 player:
-  shard-chars: 2
+  shard-chars: 2 # Number of characters to use for sharding player files when split_file_by_uuid is enabled. This should be set to a value that creates a reasonable number of files per directory based on your player count. For example, with 2 shard chars, each directory will contain up to 256 files (00-ff), which is suitable for servers with up to around 10,000 players. Adjust this value as needed based on your server's player count and filesystem performance.
+  auto_discard_on_leave: 0 # In kilobytes, so 1024 = 1MB. This is the threshold for automatically discarding player variables when they leave the server. Set to 0 to disable auto-discarding.
+  background_load_files_per_tick: 1 # Number of player files to load per server tick during startup. Adjust this based on your server's performance and the number of player files you have. Setting it to a higher number can speed up startup, but may cause lag if set too high.
+  preload_players: false # Allows the server to be locked until all player variables have loaded
 
-  # Auto-discard small player files on quit. A bare-schema file is ~20 KB.
-  # When a player joins once and leaves with no meaningful gameplay, their
-  # file ends up at or near that size. Set this to a threshold in KB; on
-  # PlayerQuitEvent, if the file is at or below the threshold it gets
-  # deleted (along with -shm/-wal companions). Their identity in
-  # playerdata.db (uuid/name/first_join/last_quit) is NOT touched, so they
-  # still appear in /skstorage who.
-  #
-  # 0 (default) disables this. Suggested production value if you want it
-  # on: 24 (KB), catches "joined once, never came back" players,
-  # leaves anyone who actually played alone.
-  auto_discard_on_leave_kb: 0
-
-  # Background eager-load: walk every per-player file after boot and load
-  # its variables into Skript's RAM, so offline-player data is queryable
-  # by loops like `loop {credits::*}` (used by leaderboards). Throttled
-  # to N files per server tick so the main thread stays responsive.
-  #   1 = ~20 files/sec (very gentle)
-  #   5 = ~100 files/sec (typical sweet spot)
-  #   0 = disabled (lazy-load only, offline data NOT queryable)
-  # At 5/tick a 100k-file server finishes in ~17 minutes after boot.
-  background_load_files_per_tick: 1
-
-  # Preload mode. Controls WHEN per-player files get loaded into Skript's
-  # variable tree, which determines whether the loaded variables are
-  # visible to wildcard iteration and dynamic name resolution.
-  #
-  #   false (default): "lite" / lazy. Skript's load_i returns immediately;
-  #                    background_load_files_per_tick drip-feeds files
-  #                    asynchronously AFTER Skript's load phase is complete.
-  #                    Variables fed in post-load land in Skript's direct
-  #                    lookup map ONLY, they are invisible to:
-  #                      - `loop {x::*}` wildcard iteration
-  #                      - `{x::%var%::y}` dynamic name resolution
-  #                    Literal `{x::<hardcoded-name>::y}` access still works.
-  #                    Fine for setups where every per-player query uses a
-  #                    constant, hardcoded variable name.
-  #
-  #   true:            "full" / blocking. load_i synchronously walks every
-  #                    per-player file and integrates its variables during
-  #                    Skript's load phase, same pattern persistent.db and
-  #                    server.db use. Variables fully integrate into the
-  #                    tree: wildcard iteration and dynamic resolution both
-  #                    work for every player, online or offline.
-  #
-  #                    Cost: Skript will NOT finish loading until every
-  #                    file is loaded. For 2,500 files this is ~30-60s
-  #                    additional boot time; for 100,000 files it can be
-  #                    several minutes. The server's "Done" message and
-  #                    player-join readiness are gated on this completing.
-  #
-  # Turn this on if you have ANY cross-player loops (`loop {x::*}`),
-  # leaderboards, or code that builds variable names dynamically from a
-  # UUID held in another variable. This is the typical case for team
-  # systems, party plugins, top-N rankings, etc.
-  preload_players: false
-
-# Server scope. Two modes:
-#   strict (default):    server scope claims only names starting with `sf::`.
-#                        Anything not in persistent / player / server stays in
-#                        Skript's RAM (lost on restart). Surfaces stray vars.
-#   legacy_fallthrough:  server scope claims EVERY name not claimed by
-#                        persistent or player. Migration-safe for legacy
-#                        codebases that pre-date SkStorage's prefix rules.
-server:
-  # Set true to migrate from a legacy codebase where most globals don't have
-  # the sf:: prefix. Recommended: leave false on greenfield servers; turn on
-  # only during a migration window then refactor your scripts to use sf::.
-  legacy_fallthrough: false
-
-# Server scope (global state) requires the `sf::` prefix on variable names.
-# A variable that doesn't match the persistent allowlist, doesn't contain
-# a UUID, and doesn't start with `sf::` is NOT persisted. It lives in
-# Skript's RAM for the session and is lost on restart. This prevents the
-# silent fallthrough that hid 198 corrupt eco.credits names in your old DB.
-# Examples that route to server.db:
-#   {sf::event.active}             yes
-#   {sf::spawn.location}           yes
-#   {server.spawn}                 NO (no prefix, unrouted)
-#   {credits::%uuid%}              -> persistent (allowlist)
-#   {homes::%uuid%::1}             -> player (UUID detected)
-
-# Auto-tracked player metadata. The plugin maintains uuid, name, first/last
-# join, playtime, sessions, etc. without any script involvement, in
-#   plugins/SkStorage/playerdata.db
-# Skript reads via:  playerdata "<field>" of <player>
-# Fields: uuid, name, first join, last join, last quit, playtime, sessions,
-#         last world, last ip hash (only if enabled below).
-# This data is read-only from Skript and survives season resets.
-# PlotSquared integration. When a plot is deleted (PostPlotDeleteEvent fires),
-# auto-sweep server.db for any variable name containing the deleted plot's
-# world name or plot ID and delete the matches. Useful for cleaning up
-# location-keyed data (plant data, hooks, plot shops, etc.) that becomes
-# orphaned when a plot is wiped. Only fires after a successful delete, never
-# on cancel. Soft-depends on PlotSquared; if PS isn't loaded this is a no-op.
+# Other integrations
+litebans:
+  forget_on_ban: true
 plotsquared:
   cleanup_on_delete: false
 
 playerdata:
   enabled: true
 
-  # Alt detection / abuse correlation feature.
-  # When enabled, stores a keyed hash of the player's last seen IP address
-  # for abuse prevention and alt-detection. Raw IP addresses are never stored
-  # by this plugin. Depending on your jurisdiction, hashed IP addresses may
-  # still be considered personal or pseudonymous data. Server owners are
-  # responsible for enabling this only where they have a lawful basis and
-  # appropriate notice.
-  track_last_ip_hash: false
+# Commands
+commands:
+  stats: enabled # View current database strain and other debug info.
+  who: enabled # Look up tracked player metadata (uuid, name, first/last join, playtime, etc).
+  clear: enabled # Wipe every non-permanent table. Use with caution.
+  reload: enabled # Reloads the config only. Disabling this command will have no effect on the in-game command. This is required to prevent soft-locking your server if you misconfigure the plugin and can't reload it to fix the config.
+  migrate: enabled # Import a PatPeter SQLibrary variables21 table.
+  flatline: enabled # Force reload a single player's data from disk.
+  kill: console_only # Safely kills the plugin's database connection without revival, allowing for safe plugin reloads without restarting the server. Data is saved. 
+  alive: console_only # Revives the plugin after a /skstorage kill. Disabling this command will have no effect on the in-game command.
+  merge: enabled # Merges two player profiles together, combining their variables and metadata. Use with caution, as this can cause data loss if used incorrectly. 
+  route: enabled # Test which table a variable would be routed to without actually setting it. Useful for debugging your patterns.
+
+# LuckPerms routing / these explictly override any selected routing.
+# stats permission: SkStorage.StatsCommandPrivileged
+# who permission: SkStorage.WhoCommandPrivileged
+# clear permission: SkStorage.ClearCommandPrivileged
+# reload permission: SkStorage.ReloadCommandPrivileged
+# migrate permission: SkStorage.MigrateCommandPrivileged
+# flatline permission: SkStorage.FlatlineCommandPrivileged
+# kill permission: SkStorage.KillCommandPrivileged
+# alive permission: SkStorage.AliveCommandPrivileged
+# merge permission: SkStorage.MergeCommandPrivileged
+# route permission: SkStorage.RouteCommandPrivileged
+# all permissions: SkStorage.AdminCommandsPrivileged
+# You can also drop "Privileged" from the end of the permission to respect this config's routing rules.
+# Operators bypass all permissions, including the routing rules, and can use all commands regardless of their permissions.
+
+# Killing the database layer live will route all variables to a 
+# _disabled.db file. When the database is revived, _disabled.db will be deleted permanently.
+# Skript will be under the impression that the variables tables are still active
+# even though it will be routing to a stub. This is intentional.
+# To prevent SkStorage from deleting _disabled.db on startup or revival, swap the toggle below
+  automatically_delete_disabled_db_on_startup: true 
+
+# Experimental features
+experimental:
+  use_bigdecimal: false # Whether to use BigDecimal for numbers instead of double. This is slower but more precise, and may be required for some integrations.
+  threaded_file_io: false # Whether to use a separate thread for file I/O. This can improve performance on large servers, but may cause issues with some plugins that expect synchronous file access.
+  ignore_invalid_files: true 
+  # Disabling ignore_invalid_files will cause the plugin to throw an error
+  # and stop loading if it encounters a corrupted file, which
+  # can help identify issues that need to be fixed.
+  # THIS IS FOR DEBUGGING PURPOSES ONLY, DISABLING THIS FEATURE
+  # WILL CAUSE YOUR SERVER TO NOT LOAD.
+  skip_file_locking: false # Whether to skip file locking. This can improve performance on some filesystems, but may cause data corruption if multiple processes access the same files. Use with caution.
+  disable_wal: false # Whether to disable Write-Ahead Logging (WAL) for SQLite. This can improve performance, but may cause data loss in the event of a crash. Use with caution.
+  silently_error_soft: false # Silences non-critical errors that the plugin can recover from.
+  silently_error_hard: false # Silences ALL errors in console. Don't do this.
+  # In order to use BigDecimal, you must turn on skip Skript math below:
+skript:
+  skip_math: false # Whether to skip Skript's built-in math handling. This is required for BigDecimal support, but may break some scripts that rely on Skript's math behavior. Use with caution.
+# Note that enabling this feature may break some Skript compatibility, as Skript's math handling is not always consistent with Java's BigDecimal behavior. Use with caution and test your scripts thoroughly.
+
+convert_csv:
+  enabled: false 
+  # Enablable once, then deletes itself from the config. 
+  # This is a one-time option to convert old CSV files to the new database format.
+  # Once the conversion is complete, this option will be removed from the config to prevent accidental re-conversion. 
+  # After running with this option enabled, make sure to check your logs for any errors during conversion and verify that your data has been successfully migrated before deleting your old CSV files.
+  # Note that you will still have to manually remove the old CSV files after conversion, as the plugin will not delete them automatically to prevent data loss. Make sure to back up your data before running the conversion, just in case anything goes wrong.
+  # This feature is not recommended for any purpose other than to migrate to .db format for development work.
+  # All CSV rows will be placed into a generic default.db database. While you can run this, it is recommended to not.
+
+# Ze blootoof device is now connected <3
